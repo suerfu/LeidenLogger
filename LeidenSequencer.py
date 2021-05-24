@@ -1,9 +1,10 @@
 #!/usr/bin/python3
 
-import sys;
-import getopt;
-import time;
-import datetime;
+import sys
+import getopt
+import time
+import datetime
+import LakeShoreController as LSC
 
 def Now():
     return datetime.datetime.now()
@@ -52,15 +53,16 @@ dTdt = 1
 # Output will be the direct and exact output filename without the .txt suffix.
 # Prefix will also have the date and time information appended.
 prefix = "output"
-Log = ""
-Output = ""
+temp = prefix+"_"+time.strftime('%Y%m%d')+"_"+time.strftime('%H%M%S') 
+Log = temp+'.log'
+Output = temp+'.txt'
 
 # system output
 Sysout = [sys.stdout]
 
 # Obtain the commandline options and arguments.
 # Setpoints will be the arguments which are specified in the end
-opts, Setpoints = getopt.getopt( sys.argv[1:], "c:t:d:R:p:o:h:",["timeout=","dTdt=","port=","prefix=","output=","freq=","help"] )
+opts, Setpoints = getopt.getopt( sys.argv[1:], "c:t:d:R:p:o:hs:",["timeout=","dTdt=","port=","prefix=","output=","freq=","sample=","help"] )
 
 # Iterate through the commandline options to set the parameters.
 for opt, arg in opts:
@@ -78,13 +80,11 @@ for opt, arg in opts:
         Log = arg+".log"
         # If output is specified, then set the filenames directly.
 
-
     if opt == "--prefix":
         foo = arg+"_"+time.strftime('%Y%m%d')+"_"+time.strftime('%H%M%S')
         Output = foo+".txt"
         Log = foo+".log"
         # If prefix is used instead, then append formated date and time to the prefix.
-
 
     if opt in ("-p","--port"):
         Port = arg
@@ -95,7 +95,7 @@ for opt, arg in opts:
         # Heater resistance
 
     if opt in ("-s", "--sample"):
-        SampleChannel = int(arg)
+        SampleChannel = arg
         # The channel which is used to judge stabilization
 
     if opt in ("--freq"):
@@ -112,6 +112,7 @@ for opt, arg in opts:
         print("options:\n")
         print("\t-c/--channels L1:L2:L3\t\t enable channel L1, L2, L3 for data taking. Note the colon as delimiter.\n")
         print("\t-d/--dTdt foo\t set the maximum allowed rate of temperature change for a stable datapoint to be foo mK/min.\n")
+        print("\t--freq foo\t Interval in seconds between successive reading while waiting for equilibrium.\n")
         print("\t-h/--help \t display help message.\n")
         print("\t-o/--output foo\t set the output filename to be foo.txt. Default is output_yyyymmdd_hhmmss.txt.\n")
         print("\t--prefix foo\t set the prefix of output filename to be foo_yyyymmdd_hhmmss.txt.\n")
@@ -119,11 +120,16 @@ for opt, arg in opts:
         print("\t-R foo\t set the sample heater resistance. Default is 10 ohms.\n")
         print("\t-s foo\t set the sample channel to foo (default is last enabled channel). Its temperature is used as stabilization criteria.\n")
         print("\t-t/--timeout T\t set the maximum wait time for temperature to stablize to be T min.\n")
+        exit()
 
 # If sample channel is not specified, then use the last enabled channel as sample channel.
 if SampleChannel==-1:
     SampleChannel = Channels[-1]
 
+if SampleChannel not in Channels:
+    for f in Sysout:
+        print( '# Error: sample channel',SampleChannel,'is not in Channels', file=f )
+    exit( -1 )
 # Configure output files
 
 OutputFile = open( Output, "w")
@@ -157,11 +163,16 @@ for f in Sysout:
 # Establish connection to the controller and configure parameters.
 # ===============================================================
 
-#logger = LakeShoreLogger( Port )
-#logger.AddLogFile( LogFile )
+for f in Sysout:
+    print( "# Opening the serial port...", file=f )
+controller = LSC.LakeShoreController( Port )
+
+for f in Sysout:
+    print( "# Adding log file...", file=f )
+controller.AddLogFile( LogFile )
 
 # Configure the resistance of the controller
-#logger.SetHeaterResistance( Resistance )
+controller.SetHeaterResistance( Resistance )
 
 
 # Temperature dictionaries 1 and 2.
@@ -176,18 +187,16 @@ T2 = {}
 for setpoint in Setpoints:
     
     power = float(setpoint)
-    # logger.SetHeaterPower( power )
+    controller.SetHeaterPower( power )
 
-    for f in Sysout:
+    #for f in Sysout:
         # PrintTimeStamp( file=f )
-        print( "# Setting heater power to %f Watt" % power, file=f )
+        # print( "# Setting heater power to %e Watt" % power, file=f )
 
     T1['ts'] = TimeSince( StartTimeOffset )
     T1['pw'] = power
-    T2['pw'] = power
     for c in Channels:
-        T1[c] = 100#logger.ReadKelvin( c )
-
+        T1[c] = controller.ReadKelvin( c )
 
     for f in Sysout:
         PrintT( T1, file=f )
@@ -195,13 +204,14 @@ for setpoint in Setpoints:
 
     while True:
         T2['ts'] = TimeSince( StartTimeOffset)
+        T2['pw'] = power
 
         # Iterate through the enabled channels to record temperature
         for ch in Channels:
-            T2[ch] = 0#logger.ReadKelvin( ch )
+            T2[ch] = controller.ReadKelvin( ch )
 
         for f in Sysout:
-            PrintT( T1, file=f )
+            PrintT( T2, file=f )
 
         # First judge if time out
         if T2['ts']-T1['ts']>Timeout*60:
@@ -224,13 +234,16 @@ for setpoint in Setpoints:
 
     T1['ts'] = TimeSince( StartTimeOffset )
     for c in Channels:
-        T1[c] = 64#logger.ReadKelvin( c )
+        T1[c] = controller.ReadKelvin( c )
     
     print( power, end=' ', file=OutputFile)
     PrintT( T1, file=OutputFile )
     print( '', file=OutputFile )
 
-#logger.SetHeaterPower( 0.0 )
+controller.SetHeaterPower( 0.0 )
+controller.close()
 
 OutputFile.close()
 LogFile.close()
+
+exit()
