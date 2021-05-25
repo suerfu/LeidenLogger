@@ -1,119 +1,114 @@
-import serial
-import time
-import sys
+# May 24, 2021
+# Created by Burkhant Suerfu
+# suerfu@berkeley.edu
 
-class LakeShoreController(object):
+# This is a class for handling communication to LakeShore 372 temperature controller.
+# This class will be derived from SerialDevice class
+# Serial parameters are:
     # Baudrate: 57600
     # Data bit: 7
     # Start bit: 1
     # Stop bit: 1
     # Parity: odd
-    
-    def __init__(self, port):
-        try:
-            self.connection = serial.Serial(port = port,
-                                            baudrate = 57600,
-                                            bytesize = 7,
-                                            parity = 'O',
-                                            stopbits = 1,
-                                            timeout = 0.1 )
-            self.resistance = -1
-            self.log = [sys.stdout]
-        except serial.SerialException:
-            print( '# Serial port not found.', file=sys.stderr)
-            #serial.tools.list_ports.comports()
-        else:
-            for f in self.log:
-                print('# Opened serial port '+port, file=f)
-            
-    def open(self):
-        return self.connection.is_open
-    
-    def close(self):
-        self.connection.close()
-        
-    def reset_input(self):
-        self.connection.reset_input_buffer()
-    
-    def SetLogFile( self, l):
-        self.log = [l]
-        
-    def AddLogFile( self, l):
-        self.log.append(l)
-    
-    def read(self, char='\r\n', size=None):
-        response = self.connection.read_until( char, size )
-        return response.decode('ascii').replace('\r','').replace('\n','')
+    # termination: '\r\n'
 
-    def write(self, msg):
-        if msg[-2:]!='\r\n':
-            msg +='\r\n'
-        reply = self.connection.write( str.encode(msg) )
-        time.sleep(0.1)
-        return reply
+    
+from SerialDevice import SerialDevice
+import sys
 
+
+class LakeShoreController( SerialDevice ):
+
+    # Constructor
+    def __init__(self, port, logs=[sys.stdout]):
+        SerialDevice.__init__(self, port=port, baudrate=57600, bytesize=7, parity='O', stopbits=1, timeout=0.05, term='\r\n', logs=logs)
+        
+        # As its own parameter, LakeShore has sample heater resistance object. Initialize to -1.
+        self.resistance = -1
+        
+        # This maximum number of channel can be changed for other LakeShore models.
+        self.MaxChannel = 16
+        
+        self.log("# Created LakeShore372 controller.", "Max. number of channels:", self.MaxChannel)
+    
+    # In communication, LakeShore expects two-digit channel form. This function formats the input channel
     def GetFormattedChannel(self, i):
         # check if channel number is valid:
-        if int(i)<1 or int(i)>16:
+        if int(i)<1 or int(i)>self.MaxChannel:
+            self.log('# Error: channel', i, 'is out of range.')
             return '-1'
             
         # format channel to 2 digits
-        ch = str(i)
-        if len(ch)==1:
-            ch = '0'+ch
-        return ch
+        return '{:0>2d}'.format( int(i) )
+
     
+    # Query for the present scanner channel
     def GetCurrentChannel( self ):
         self.write('SCAN?')
         reply = self.read()
         return reply
     
-    def ReadKelvin(self, ch):
+    # Set the scanner to the specified channel
+    def SetChannel( self, chan):
         # first format channel to be 2 digits
-        ch = self.GetFormattedChannel( ch );
+        ch = self.GetFormattedChannel( chan );
         if ch=='-1':
             return -1
         
         # next send the query command and wait until scanner in the right channel
         # first check current channel
         # if current channel is the desired channel, read directly
-        self.write('SCAN?')
-        reply = self.read()
+        reply = self.GetCurrentChannel()
         
         # otherwise first switch to the desired channel
-        while reply!=ch+',0':
+        max_try = 100
+        for i in range(1,max_try+1):
+            if reply==ch+',0':
+                return reply
+                
             # send the query
-            # remember on first query, it does physical switch while response is null, so read again
+            # sometimes on first query, it does physical switch while response is null, so read twice
             self.write( 'SCAN '+ch+',0' )
-            self.write( 'SCAN?' )
-            reply = self.read()
+            reply = self.GetCurrentChannel()
             
-            if len(reply)<2:
-                self.write( 'SCAN?' )
-                reply = self.read()
-            
-        self.write('RDGK?'+ch+'\r\n')
+            if len(reply)<4:
+                reply = self.GetCurrentChannel()
+
+        self.log('# Failed to set the right channel to %s after %d attempts' % (ch,max_try) )
+        return reply
+        
+        
+    # Read the temperature in Kelvin of the specified channel
+    # Note: this function does NOT guarantee accurate reading: one must make sure the scanner is set at the right channel.
+    def ReadKelvin(self, ch):
+        self.write( 'RDGK?'+ch )
         reply = self.read()
-        #print( '#',"channel",ch,"reads",reply)
         return float( reply )
     
+    # Query for the present setting of the sample heater resistance
+    # This value is needed by the LakeShore controller to set the right current for the specified power
     def GetHeaterResistance( self ):
         self.write('HTRSET?0')
         fdbk = self.read().split(',')    
         return float(fdbk[0])
+
+    # Configure the sample heater resistance
+    def SetHeaterResistance( self, R ):
         
-    def SetHeaterResistance( self, R, *, file=sys.stdout ):
+        # Format the resistance to have the right width and zero-padding
         R = '{:0>7s}'.format( '{:.3f}'.format( float(R) ) )
-        command = 'HTRSET 0,'+R+',0,0,2'
         
-        for f in self.log:
-            print('# Setting heater resistance to be %s ohm' % R, file=f )
+        command = 'HTRSET 0,'+R+',0,0,2'
         self.write( command )
         
+        self.log('# Setting heater resistance to be %s ohm' % R )
         return self.GetHeaterResistance()
 
 
+    # There is a maximum current range. The current required for the specified power must be smaller than this.
+    # For the meaning of the code, see the manual.
     def ConfigHeaterRange( self, power ):
+        
         # if resistance is not properly set, signal
         if self.resistance == -1:
             self.resistance = self.GetHeaterResistance()
@@ -121,8 +116,6 @@ class LakeShoreController(object):
         # compute current required for the specified power
         # power is in Watt
         current = ( power/self.resistance ) ** 0.5
-        for f in self.log:
-            print('# Expected current is %.3e A' % current, file=f )
         
         rang = '0'
         if current<1.e-15:
@@ -143,25 +136,27 @@ class LakeShoreController(object):
             rang='7'
         elif current<100e-3:
             rang='8'
-        
-        for f in self.log:
-            print('# Setting heater range to ' + rang, file=f)
+            
         self.write( 'RANGE 0,'+rang )
+        
+        self.log('# Expected current for %.3e W is %.3e A' % ( power, current) )
+        self.log('# Setting heater range to ' + rang )
+
         return self.GetHeaterRange()
 
-    
+    # Query for the range code of the sample heater
     def GetHeaterRange( self ):
         self.write( 'RANGE?0' )
         return self.read()
     
+    # Set the sample heater output power
     def SetHeaterPower( self, power):
         ran = self.ConfigHeaterRange( power)
-        
-        for f in self.log:
-            print('# Setting heater power to be %.3e W' % power, file=f)
         self.write( 'MOUT 0,'+'{:.2e}'.format(power) )
+        self.log('# Setting heater power to be %.3e W' % power )
         return self.GetHeaterPower()
     
+    # Query for the current setting of sample heater output power in Watt.
     def GetHeaterPower( self ):
         self.write('MOUT?0')
         return self.read()
