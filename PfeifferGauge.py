@@ -97,11 +97,10 @@ class PfeifferGauge( SerialDevice ):
         self.query()
         
         repl = self.read('\r\n', size=256)
-        if len(repl) > 1:
-            while repl.find( self.char_nak ) < 0:
-                #self.log( '# readPressure response not containing NAK symbol. Appending another readline' )
-                repl += self.read('\r\n', size=256)
-            result = repl.replace(self.char_nak,'')
+        while repl.find( self.char_nak ) < 0:
+            #self.log( '# readPressure response not containing NAK symbol. Appending another readline' )
+            repl += self.read('\r\n', size=256)
+        result = repl.replace(self.char_nak,'')
         
         pres = [ float(v) for i,v in enumerate(result.split(',')) if i%2==1 ]
         stat = [ v for i,v in enumerate(result.split(',')) if i%2==0 ]
@@ -110,4 +109,22 @@ class PfeifferGauge( SerialDevice ):
         
         return pres
         
-
+        
+        '''
+        if self.getAck()==True:
+            self.write('\x05')
+            resp = self.read('\x15\r\n', size=256).replace(self.char_nak,'')
+            if len(resp)>5:
+                stat = resp.split(',')[0]
+                pres = resp.split(',')[1]
+                if stat=='0':
+                    return float(pres)
+                else:
+                    print( '# TPG gauge error (error code %s)' % stat )
+                    return -2
+            else:
+                print( '# TPG gauge communication error' )
+                return -3
+        else:
+            print( '# readPressure: failed to get ACK from TPG gauge' )
+        '''

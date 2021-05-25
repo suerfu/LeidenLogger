@@ -5,7 +5,8 @@ import getopt
 import signal
 
 from LakeShoreController import LakeShoreController
-from PfeifferGauge import PfeifferGauge
+from PfeifferGauge       import PfeifferGauge
+from CryoMagLevelMeter   import CryoMagLevelMeter
 
 def Now():
     return datetime.datetime.now()
@@ -31,11 +32,13 @@ class LeidenLogger( object ):
             # index of LakeShore when port, freq specified as a:b:b. By default, it is first
         self.pfindex = 1
             # index of Pfeiffer when port, freq, specified as a:b:b. By default, it is second
+        self.cmindex = 2
+            # index of Pfeiffer when port, freq, specified as a:b:b. By default, it is second
         
         self.lschannels = [""]
         
         self.delta = 0.02
-        self.freq = [60, 10]
+        self.freq = [60, 10, 60]
         self.timeout = 10*60
         self.autoscan = True
         
@@ -43,12 +46,18 @@ class LeidenLogger( object ):
         
         self.lscontroller = None
         self.pfcontroller = None
+        self.cmcontroller = None
+        
         try:
             self.ConfigureLakeShore()
             self.ConfigurePfeiffer()
+            self.ConfigureCryoMag()
+            
             self.ConfigureOutput()
             self.WriteHeader()
+            
             self.SetupSignalHandler()
+            
         except:
             self.Close()
             raise
@@ -67,18 +76,28 @@ class LeidenLogger( object ):
     def WriteHeader( self ):
         if self.output[ self.lsindex ]:
             file = self.output[ self.lsindex ]
+            print('# LakeShore AC Bridge Temperature Controller', file = file )
             print('#', TimeStamp(), file = file )
-            print("# time since start", end='', file=file)
             for c in self.lschannels:
-                print(", channel "+c, end='', file=file)
+                print("time (s), T %s (K),"+c, end=' ', file=file)
             print('', file=file)
             
         if self.output[ self.pfindex ]:
             file = self.output[ self.pfindex ]
+            print('# Pfeiffer TPG366 Vacuum Gauge', file = file )
             print('#', TimeStamp(), file = file )
             print("# time since start", end='', file=file)
             for c in range(1,7):
                 print(", channel %d" % c, end='', file=file)
+            print('', file=file)
+        
+        if self.output[ self.cmindex ]:
+            file = self.output[ self.cmindex ]
+            print('# CryoMagnetics Cryogen Level Meter LM-510', file = file )
+            print('#', TimeStamp(), file = file )
+            print("# time since start", end='', file=file)
+            for c in range(1,3):
+                print(", channel %d (cm)" % c, end='', file=file)
             print('', file=file)
     
     
@@ -92,37 +111,18 @@ class LeidenLogger( object ):
             print('# LeidenLogger: executing event loop...')
             
             while True:
+                
                 # if autoscan is false, then update only pressure (and liquid level),
                 # and check if autoscan should be turned back on.
-                if self.UpdateAutoScan()==False:
-                    self.UpdatePressure()
-                    time.sleep( 1 )
-                    
-                # AutoScan is active. Iterate over LakeShore enabled channels to update reading.
-                else:
-                    for ch in self.lschannels:
-                        
-                        # Check manual activity before each action
-                        if self.UpdateAutoScan()==True:
-                            
-                            # First set the scanner to the right channel and then wait for reading to stablize
-                            self.LSPrevChannel = self.lscontroller.SetChannel( ch )
-                            
-                            # In the meantime, update pressure as needed
-                            for i in range(1,5):
-                                self.UpdatePressure()
-                                time.sleep( 1 )
-                            
-                            # After the wait time, if there was no manual activity, then update temperature reading
-                            if self.UpdateAutoScan()==True:
-                                self.Temperature['ts_'+ch] = self.TimeSinceStart( )
-                                self.Temperature[ch] = self.lscontroller.ReadKelvin( ch )
-                    
-                    # Before update, check one more time
-                    # If autoscan is false at this point, it means temperature has not been all updated properly.
-                    if self.UpdateAutoScan()==True:
-                        self.UpdateTemperature()
-                        
+                if self.UpdateAutoScan()==True:
+                    self.UpdateTemperature( self.UpdatePressure, self.UpdateLiquidLevel )
+                
+                self.UpdatePressure()                        
+                
+                self.UpdateLiquidLevel()
+                
+                time.sleep( 1 )
+
         except:
             print('# LeidenLogger: exception has ocurred. Terminating...')
             self.Close()
@@ -164,25 +164,84 @@ class LeidenLogger( object ):
         return max(res)
     
     #
-    def UpdateTemperature( self ):
+    def UpdateTemperature( self, *callback ):
+        
+        # If not enough time has elapsed, return without updating
+        if TimeStamp() - self.LSPrevReading < self.freq[ self.lsindex ]:
+            return
+        
+        for ch in self.lschannels:
+     
+            # Check manual activity before each action
+            if self.UpdateAutoScan()==True:
+                            
+                # First set the scanner to the right channel and then wait for reading to stablize
+                self.LSPrevChannel = self.lscontroller.SetChannel( ch )
+                            
+                # Temperature update takes time.
+                # In the meantime, Update pressure and liquid level as needed by the callback functions
+                for i in range(1,5):
+                    for func in callback:
+                        func()
+                    time.sleep( 1 )
+                            
+                # After the wait time, if there was no manual activity, then update temperature reading
+                if self.UpdateAutoScan()==True:
+                    self.Temperature['ts_'+ch] = int( self.TimeSinceStart( ) )
+                    self.Temperature[ch] = self.lscontroller.ReadKelvin( ch )
+                else:
+                    return
+                    
+        # If program reaches this line, it means autoscan was true for all readings. Update output data file.
         if self.output[ self.lsindex ]:
             self.WriteDict( self.Temperature, file = self.output[self.lsindex] )
-    
+        self.LSPrevReading = TimeStamp()
+                        
+    #
+    def UpdateLiquidLevel( self ):
+        
+        # Check frequency or if it is enabled.
+        if self.output[ self.cmindex ]==None:
+            #print('# debug: liquid level not updated because output is not enabled.')
+            return
+        
+        if TimeStamp() - self.CMPrevReading < self.freq[ self.cmindex ]:
+            #print('# debug: liquid level not updated because not enough time has passed since last reading.')
+            return
+
+        # Perform a liquid level reading
+        self.CMPrevReading = TimeStamp()
+        self.LiquidLevel = [ self.cmcontroller.GetLiquidLevel(n) for n in range(1,3) ]
+        if None in self.LiquidLevel:    
+            print('# LeidenLogger: liquid level not updated due to invalid reading present in', self.LiquidLevel )
+        else:
+            #print('# debug: updating liquid level with', self.LiquidLevel )
+            print( int(self.TimeSinceStart() ), end='', file = self.output[self.cmindex])
+            for i in self.LiquidLevel:
+                print( ',', '%f' % i, end=' ', file = self.output[self.cmindex])
+            print( '', file = self.output[self.cmindex])
+                
+
     # Function to update the status of autoscan
     # Rule 1: no activity for timeout minutes, turn autoscan on.
     # Rule 2: if present channel is different from last check, update time of last manual activity and set false.
     def UpdateAutoScan( self ):
         
         if self.LakeShoreActive()==False:
-            return False
+            self.autoscan = False
+            return self.autoscan
         
         self.LSCurChannel = self.lscontroller.GetCurrentChannel()
         
+        # No manual change of scanner channel
         if self.LSPrevChannel == self.LSCurChannel:
+            # If it has been inactive for long enough, print message and reactivate auto-scan
             if TimeStamp() - self.LSLastActivity > self.timeout:
                 if self.autoscan==False:
                     print('# LeidenLogger: inactive for %d, enabling autoscan...' % self.timeout )
                 self.autoscan = True
+        
+        # If there was activity, then update the channel and time of activity
         else:
             if self.autoscan == True:
                 print('# LeidenLogger: manual activity detected. Disabling autoscan...' )
@@ -242,6 +301,17 @@ class LeidenLogger( object ):
         else:
             print("# LeidenLogger: port not specified. Pfeiffer will not be enabled." )
 
+    def ConfigureCryoMag( self ):
+        if self.port[self.cmindex]!='':
+            try:
+                print( "# LeidenLogger: configuring CryoMagnetics LM-510 at %s" % self.port[self.cmindex] )
+                self.cmcontroller = CryoMagLevelMeter( self.port[self.cmindex] )
+                self.CMPrevReading = TimeStamp()-2*self.freq[self.cmindex]
+            except:
+                print("# LeidenLogger: failed to configure CryoMagnetics LM-510. CryoMagnetics LM-510 will not be enabled." )
+                raise
+        else:
+            print("# LeidenLogger: port not specified. CryoMagnetics LM-510 will not be enabled." )
             
     def Close( self ):
         if self.lscontroller:
@@ -253,7 +323,12 @@ class LeidenLogger( object ):
             print('# LeidenLogger: closing Pfeiffer...')
             self.pfcontroller.close()
             self.pfcontroller = None
-        
+            
+        if self.cmcontroller:
+            print('# LeidenLogger: closing CryoMagnetics...')
+            self.cmcontroller.close()
+            self.cmcontroller = None
+            
         for f in self.output:
             if f:
                 f.close()
@@ -304,16 +379,17 @@ class LeidenLogger( object ):
                 print("usage: "+argv[0]+" [options optional_parameter]\n")
                 print("options:\n")
                 print("\t--prefix foo\t set the prefix of output filename to be foo_yyyymmdd_hhmmss.")
-                print("\t            \t Three files with suffixes _pres, _temp and _liqlevel will be created.")
-                print("\t--port LS:PF\t\t serial port address for LakeShore:Pfeiffer connection.")
-                print("\t--freq t\t interval in seconds between successive readings.\n")
+                print("\t            \t Three files with suffixes _pres.txt, _temp.txt and _liqlevel.txt will be created.")
+                print("\t--port LS:PF:CM\t\t serial port address for LakeShore:Pfeiffer:CryoMagLevelMeter connection.")
+                print("\t--freq t1:t2:t3\t max interval in seconds between successive readings for LS:PF:CM.\n")
 
-                print("\t--channel L1:L2:L3\t (LakeShore) enable channel L1, L2, L3 for data taking. Note the colon as delimiter.")
+                print("\t--channel L1:L2:L3\t (LakeShore) enable channel L1, L2, L3, ... for data taking. Note the colon as delimiter.")
                 print("\t--timeout T\t\t (LakeShore) after T min of inactivity, autoscan will be turned on.\n")
 
                 print("\t--delta  foo\t (Pfeiffer) record data when reading differs by more than foo (fraction) from previous reading.")
 
                 print("\t-h/--help \t display help message.\n")
+                sys.exit()
 
     def LakeShoreActive( self ):
         if self.lscontroller:
