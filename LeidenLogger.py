@@ -180,8 +180,9 @@ class LeidenLogger( object ):
         
         if self.LSPrevChannel == self.LSCurChannel:
             if TimeStamp() - self.LSLastActivity > self.timeout:
+                if self.autoscan==False:
+                    print('# LeidenLogger: inactive for %d, enabling autoscan...' % self.timeout )
                 self.autoscan = True
-                print('# LeidenLogger: inactive for %d, enabling autoscan...' % self.timeout )
         else:
             if self.autoscan == True:
                 print('# LeidenLogger: manual activity detected. Disabling autoscan...' )
