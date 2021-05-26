@@ -64,11 +64,12 @@ class SerialDevice(object):
     
     # Reconfigure the log file to be a single log file
     def SetLogFile( self, l):
-        self.logs = [l]
+        self.logfiles = [l]
     
     # Add additional location for logging   
     def AddLogFile( self, l):
-        self.logs.append(l)
+        if l not in self.logfiles:
+            self.logfiles.append(l)
     
     # Read the serial port
     def read(self, char=None, size=None):

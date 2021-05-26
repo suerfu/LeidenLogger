@@ -15,6 +15,7 @@
     
 from SerialDevice import SerialDevice
 import sys
+import time
 
 
 class LakeShoreController( SerialDevice ):
@@ -28,6 +29,9 @@ class LakeShoreController( SerialDevice ):
         
         # This maximum number of channel can be changed for other LakeShore models.
         self.MaxChannel = 16
+        
+        # 
+        self.max_attempt = 10
         
         self.log("# Created LakeShore372 controller.", "Max. number of channels:", self.MaxChannel)
     
@@ -84,13 +88,27 @@ class LakeShoreController( SerialDevice ):
         self.write( 'RDGK?'+ch )
         reply = self.read()
         return float( reply )
+
+    # Read the resistance in ohm.
+    # Resistance is useful when the temperature is out of measurement range.
+    def ReadOhm(self, ch):
+        self.write( 'RDGR?'+ch )
+        reply = self.read()
+        return float( reply )
     
     # Query for the present setting of the sample heater resistance
     # This value is needed by the LakeShore controller to set the right current for the specified power
     def GetHeaterResistance( self ):
-        self.write('HTRSET?0')
-        fdbk = self.read().split(',')    
-        return float(fdbk[0])
+        for t in range(1,self.max_attempt+1):
+            self.write('HTRSET?0')
+            fdbk = self.read().split(',')
+            if len(fdbk) > 2:
+                return float( fdbk[0] )
+            else:
+                self.log('# Failed to get heater resistance on attempt %d. Trying again...' % t)
+
+        self.log('# Failed to get heater resistance after %d attempts.' % self.max_attemp)
+        return None
 
     # Configure the sample heater resistance
     def SetHeaterResistance( self, R ):
@@ -101,7 +119,7 @@ class LakeShoreController( SerialDevice ):
         command = 'HTRSET 0,'+R+',0,0,2'
         self.write( command )
         
-        self.log('# Setting heater resistance to be %s ohm' % R )
+        self.log('# Setting heater resistance to be %s Ohm' % R )
         return self.GetHeaterResistance()
 
 
