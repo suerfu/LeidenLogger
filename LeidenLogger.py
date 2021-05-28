@@ -4,6 +4,10 @@ import time
 import getopt
 import signal
 
+from _thread import *
+import threading
+import socket
+
 from LakeShoreController import LakeShoreController
 from PfeifferGauge       import PfeifferGauge
 from CryoMagLevelMeter   import CryoMagLevelMeter
@@ -42,6 +46,8 @@ class LeidenLogger( object ):
         self.timeout = 10*60
         self.autoscan = True
         
+        self.ServerOutput = "leiden_status.txt"
+        
         self.ConfigureOpt( argv )
         
         self.lscontroller = None
@@ -63,6 +69,27 @@ class LeidenLogger( object ):
             raise
     
     
+    def StartServer( self ):
+        self.server_socket = socket.socket( socket.AF_INET, socket.SOCK_STREAM )
+        self.server_socket.setsockopt( socket.SOL_SOCKET, socket.SO_REUSEADDR, 1 )
+        self.server_socket.bind( ('', self.ServerPort) )
+        self.server_socket.listen( 1 )
+        print('# Starting http server on port %d' % self.ServerPort )
+        
+        while True:
+            print('# Waiting to accept')
+            client, addr = self.server_socket.accept()
+            req_data = client.recv(1024).decode('utf-8')
+            print('# received', req_data)
+            #if req_data.find('GET /status') >=0 :
+            response = 'HTTP/1.1 200 OK\n\nHello World!'
+                #response +=
+            client.sendall( response.encode('utf-8') )
+            print('# sent')
+            
+            client.close()
+        
+    
     def ConfigureOutput( self ):
         if self.prefix=="":
             self.output = [ sys.stdout for f in self.port ]
@@ -76,18 +103,17 @@ class LeidenLogger( object ):
     def WriteHeader( self ):
         if self.output[ self.lsindex ]:
             file = self.output[ self.lsindex ]
-            print('# LakeShore AC Bridge Temperature Controller', file = file )
             print('#', TimeStamp(), file = file )
+            print('#', end=', ', file = file)
             for c in self.lschannels:
                 print("time, T%s, R%s," % (c,c), end=' ', file=file)
             print('', file=file)
+            print('# LakeShore AC Bridge Temperature Controller', file = file )
             print("# Time is measured in second, temperature in Kelvin and resistance in Ohm.", file=file)
             
         if self.output[ self.pfindex ]:
             file = self.output[ self.pfindex ]
-            print('# Pfeiffer TPG366 Vacuum Gauge', file = file )
             print('#', TimeStamp(), file = file )
-            
             endchar = ', '
             print("# time since start", end=endchar, file=file)
             for c in self.PFHeader:
@@ -95,6 +121,7 @@ class LeidenLogger( object ):
                     endchar = '\n'
                 print( c, end=endchar, file=file)
             print('', file=file)
+            print('# Pfeiffer TPG366 Vacuum Gauge', file = file )
             print('# Time measured in second and pressure in mbar.', file=file)
             print('# Note: gauge channel is default. It could have been altered without software update.', file=file)
             print('# Note: mbar is default. Pressure unit could be changed on the gauge controller. Please check!', file=file)
@@ -102,12 +129,12 @@ class LeidenLogger( object ):
         
         if self.output[ self.cmindex ]:
             file = self.output[ self.cmindex ]
-            print('# CryoMagnetics Cryogen Level Meter LM-510', file = file )
             print('#', TimeStamp(), file = file )
             print("# time since start", end='', file=file)
-            for c in ['LHe (cm)', 'LN2 (cm)']:
+            for c in [', LHe (cm)', ', LN2 (cm)']:
                 print( c, end='', file=file)
             print('', file=file)
+            print('# CryoMagnetics Cryogen Level Meter LM-510', file = file )
     
     
     def Execute( self ):
@@ -128,12 +155,30 @@ class LeidenLogger( object ):
                 self.UpdatePressure()                        
                 self.UpdateLiquidLevel()
                 
+                self.UpdateServer()
+
                 time.sleep( 1 )
 
         except:
             print('# LeidenLogger: exception has ocurred. Terminating...')
             self.Close()
             raise
+    
+    def UpdateServer( self ):
+        if self.ServerOutput==None:
+            return
+        with open( self.ServerOutput, 'w' ) as server:
+            print( 'Current time:', Now(), file=server )
+            print( '\nTemperature:', file=server )
+            for c in self.lschannels:
+                print( '\tChannel %s:\t%.3e K / %.3e Ohm' % (c, self.Temperature[c], self.Resistance[c]), file=server)
+                      
+            print('\nPressure:', file=server)
+            for n,p in enumerate(self.Pressure0):
+                print( '\t%s:\t%.3e mbar' % (self.PFHeader[n], p), file=server)
+
+            print('\nCryogen level:', file=server)
+            print( '\tLHe: %.2f cm' % self.LiquidLevel[0], file=server)
     
     #
     def UpdatePressure( self ):
@@ -158,7 +203,7 @@ class LeidenLogger( object ):
             if self.output[ self.pfindex ]:
                 print( int(self.TimeSinceStart() ), end='', file = self.output[self.pfindex])
                 for i in self.Pressure1:
-                    print( ',', '%e' % i, end=' ', file = self.output[self.pfindex])
+                    print( ', %e' % i, end='', file = self.output[self.pfindex])
                 print( '', file = self.output[self.pfindex])
             self.PFPrevReading = curr
         
@@ -333,7 +378,7 @@ class LeidenLogger( object ):
                 print( "# LeidenLogger: configuring Pfeiffer at %s" % self.port[self.pfindex] )
                 self.pfcontroller = PfeifferGauge( self.port[self.pfindex] )
                 self.PFPrevReading = TimeStamp()-2*self.freq[self.pfindex]
-                self.PFHeader = ['condensor', 'still', 'dump', 'pot', 'IVC', 'custom']
+                self.PFHeader = ['condsr', 'still', 'dump', 'pot', 'IVC', 'custom']
             except:
                 print("# LeidenLogger: failed to configure Pfeiffer. Pfeiffer will not be enabled." )
                 raise
@@ -372,6 +417,9 @@ class LeidenLogger( object ):
             if f:
                 f.close()
         
+        #if self.server_socket:
+        #    self.server_socket.close()
+        
     
     def ConfigureOpt( self, argv ):
         print('# LeidenLogger configuring commandline options.')
@@ -379,7 +427,7 @@ class LeidenLogger( object ):
     
         # Obtain the commandline options and arguments.
         # Setpoints will be the arguments which are specified in the end
-        opts, _ = getopt.getopt( argv[1:], "h", ["channel=","timeout=","delta=","port=","prefix=","freq=","help"] )
+        opts, _ = getopt.getopt( argv[1:], "h", ["channel=","timeout=","delta=","port=","prefix=","freq=","no-server", "server-port","help"] )
 
         # Iterate through the commandline options to set the parameters.
         for opt, arg in opts:
@@ -413,7 +461,13 @@ class LeidenLogger( object ):
             # Switch on auto-scanning (LakeShore) after being inactive for certain amount of time.
             if opt in ("--timeout"):
                 self.timeout = int(arg)*60
-
+                
+            if opt in ("--no-server"):
+                self.ServerOutput = None
+                
+            if opt in ("--server-file"):
+                self.ServerOutput = argv
+                
             if opt in ("-h","--help"):
                 print("usage: "+argv[0]+" [options optional_parameter]\n")
                 print("options:\n")
@@ -425,8 +479,12 @@ class LeidenLogger( object ):
                 print("\t--channel L1:L2:L3\t (LakeShore) enable channel L1, L2, L3, ... for data taking. Note the colon as delimiter.")
                 print("\t--timeout T\t\t (LakeShore) after T min of inactivity, autoscan will be turned on.\n")
 
-                print("\t--delta  foo\t (Pfeiffer) record data when reading differs by more than foo (fraction) from previous reading.")
+                print("\t--delta  foo\t (Pfeiffer) record data when reading differs by more than foo (fraction) from previous reading.\n")
 
+                print("\t-h/--no-server\t start program without running the server.\n")
+                
+                print("\t-h/--server-file foo\t use foo as status file for server output.\n")
+                
                 print("\t-h/--help \t display help message.\n")
                 sys.exit()
 
