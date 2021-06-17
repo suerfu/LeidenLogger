@@ -4,7 +4,7 @@
 
 # This is a class for handling communication to LakeShore 372 temperature controller.
 # This class will be derived from SerialDevice class
-# Serial parameters are:
+# Serial parameters on the LakeShore controller are:
     # Baudrate: 57600
     # Data bit: 7
     # Start bit: 1
@@ -18,6 +18,8 @@ import sys
 import time
 
 
+# LakeShoreController is derived from SerialDevice
+
 class LakeShoreController( SerialDevice ):
 
     # Constructor
@@ -25,15 +27,18 @@ class LakeShoreController( SerialDevice ):
         SerialDevice.__init__(self, port=port, baudrate=57600, bytesize=7, parity='O', stopbits=1, timeout=0.05, term='\r\n', logs=logs)
         
         # As its own parameter, LakeShore has sample heater resistance object. Initialize to -1.
+        # This resistance is updated later by reading from the controller.
         self.resistance = -1
         
         # This maximum number of channel can be changed for other LakeShore models.
         self.MaxChannel = 16
         
-        # 
+        # In case a read is not successful, it will try a max of max_attempt times before reporting an error.
+        # This is necessary whenever a parameter is read from the controller or when while True is used.
         self.max_attempt = 10
         
         self.log("# Created LakeShore372 controller.", "Max. number of channels:", self.MaxChannel)
+    
     
     # In communication, LakeShore expects two-digit channel form. This function formats the input channel
     def GetFormattedChannel(self, i):
@@ -47,10 +52,13 @@ class LakeShoreController( SerialDevice ):
 
     
     # Query for the present scanner channel
+    # In the future, probably one should check the validity of the returned channel.
+    # Note this function will return channel in 2 digits plus ',0' (e.g. '03,0')
     def GetCurrentChannel( self ):
         self.write('SCAN?')
         reply = self.read()
         return reply
+    
     
     # Set the scanner to the specified channel
     def SetChannel( self, chan):
@@ -65,8 +73,9 @@ class LakeShoreController( SerialDevice ):
         reply = self.GetCurrentChannel()
         
         # otherwise first switch to the desired channel
-        max_try = 100
-        for i in range(1,max_try+1):
+        for i in range( 1, self.max_attempt+1):
+            # If last reply is right, return the reply message.
+            # Otherwise try again
             if reply==ch+',0':
                 return reply
                 
@@ -89,19 +98,24 @@ class LakeShoreController( SerialDevice ):
         reply = self.read()
         return float( reply )
 
+    
     # Read the resistance in ohm.
     # Resistance is useful when the temperature is out of measurement range.
     def ReadOhm(self, ch):
+        # RDGR represents read resistance
         self.write( 'RDGR?'+ch )
         reply = self.read()
         return float( reply )
     
+    
     # Query for the present setting of the sample heater resistance
-    # This value is needed by the LakeShore controller to set the right current for the specified power
+    # This value is needed by LeidenSequencer to pick the right current range when setting heater power
     def GetHeaterResistance( self ):
         for t in range(1,self.max_attempt+1):
             self.write('HTRSET?0')
             fdbk = self.read().split(',')
+            
+            # The response will be long. The value of the current resistance is the first number before comma.
             if len(fdbk) > 2:
                 return float( fdbk[0] )
             else:
@@ -110,7 +124,9 @@ class LakeShoreController( SerialDevice ):
         self.log('# Failed to get heater resistance after %d attempts.' % self.max_attemp)
         return None
 
+    
     # Configure the sample heater resistance
+    # This value is needed by the LakeShore controller to set the right current for the specified power
     def SetHeaterResistance( self, R ):
         
         # Format the resistance to have the right width and zero-padding
@@ -162,10 +178,12 @@ class LakeShoreController( SerialDevice ):
 
         return self.GetHeaterRange()
 
+    
     # Query for the range code of the sample heater
     def GetHeaterRange( self ):
         self.write( 'RANGE?0' )
         return self.read()
+    
     
     # Set the sample heater output power
     def SetHeaterPower( self, power):
@@ -173,6 +191,7 @@ class LakeShoreController( SerialDevice ):
         self.write( 'MOUT 0,'+'{:.2e}'.format(power) )
         self.log('# Setting heater power to be %.3e W' % power )
         return self.GetHeaterPower()
+    
     
     # Query for the current setting of sample heater output power in Watt.
     def GetHeaterPower( self ):

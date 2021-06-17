@@ -21,7 +21,8 @@ class SerialDevice(object):
 
     # Constructor
     # Use named arguments for configurations with default settings.
-    # logs is a list of file objects for recording the output
+    # logs is a list of file objects for recording the output or for debugging
+    # The argument term is termination character for a sentence. By default it is carriage return + line feed.
     def __init__(self, port, *, baudrate=9600, bytesize=8, parity='N', stopbits=1, timeout=0.05, term='\r\n', logs=[sys.stdout]):
         
         # Attempt to open the serial connection with the default/specified parameters
@@ -72,6 +73,8 @@ class SerialDevice(object):
             self.logfiles.append(l)
     
     # Read the serial port
+    # Note this function will read the input buffer until the termination character
+    # After the read, the delimiter is removed from the line.
     def read(self, char=None, size=None):
         if char==None:
             char = self.term
@@ -82,10 +85,11 @@ class SerialDevice(object):
         return response
 
     # Send command through the serial port to the device
+    # If wait is specified, function will pause for the specified seconds for proper response.
     def write(self, msg, *, wait=0 ):
         
         # Check if message has the desired termination or appending characters
-        # If not, 
+        # If not, append to the message
         if msg.find( self.term )<0:
             msg += self.term
         

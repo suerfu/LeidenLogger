@@ -1,24 +1,40 @@
+# May 24, 2021
+# Created by Burkhant Suerfu
+# suerfu@berkeley.edu
+
+# This program will log the temperature, pressure and the cryogen liquid level of the Leiden fridge.
+
 import sys
 import datetime
 import time
 import getopt
 import signal
 
+# Miscellaneous, needed if server is to be run within this program.
+# Currently, all server related direct functions are not working.
+
 from _thread import *
 import threading
 import socket
+
+# Modules needed for managing device connections.
 
 from LakeShoreController import LakeShoreController
 from PfeifferGauge       import PfeifferGauge
 from CryoMagLevelMeter   import CryoMagLevelMeter
 
+
+# Time-keeping. Returns current datetime in python structure.
 def Now():
     return datetime.datetime.now()
 
+
+# Timestamp in float.
 def TimeStamp():
     return Now().timestamp()
 
 
+# The actual logger function
 class LeidenLogger( object ):
     
     # Constructor. Initialize internal parameters based on commandline input
@@ -26,12 +42,20 @@ class LeidenLogger( object ):
         
         print('# LeidenLogger: initializing...')
         
+        # Default number of devices to read numbers from
         self.ndevice = 3
+        
+        # Default prefix of the output filenames.
+        # If it is "", output will not be enables.
         self.prefix = ""
         
+        # Serial port used to communicate to the device.
         self.port = ["","",""]
+        
+        # Output files and suffix to filename.
         self.output = ["","",""]
         self.suffix = ["_temp.txt","_pres.txt","_liqlev.txt"]
+        
         self.lsindex = 0
             # index of LakeShore when port, freq specified as a:b:b. By default, it is first
         self.pfindex = 1
@@ -39,21 +63,34 @@ class LeidenLogger( object ):
         self.cmindex = 2
             # index of Pfeiffer when port, freq, specified as a:b:b. By default, it is second
         
+        # LakeShore enabled channels
         self.lschannels = [""]
         
+        # Used by Pfeiffer to record pressure when there is a large change.
         self.delta = 0.02
+        
+        # Default readout frequency of the three devices.
         self.freq = [60, 10, 60]
+        
+        # Time before LakeShore switches back to autoscan mode.
         self.timeout = 10*60
         self.autoscan = True
         
+        # Server file. This file will be periodically read by a server script to print fridge status.
         self.ServerOutput = "leiden_status.txt"
         
+        
+        # === Variables initialized, program action starts from here ===
+        
+        # Read configuration from commandline.
         self.ConfigureOpt( argv )
         
+        # LakeShore, Pfeiffer and CryoMagnetics device handler files.
         self.lscontroller = None
         self.pfcontroller = None
         self.cmcontroller = None
         
+        # Try to establish communication to the devices. If failed, terminate.
         try:
             self.ConfigureLakeShore()
             self.ConfigurePfeiffer()
@@ -69,6 +106,8 @@ class LeidenLogger( object ):
             raise
     
     
+    # Start the server.
+    # This function is no longer used, and it has never worked.
     def StartServer( self ):
         self.server_socket = socket.socket( socket.AF_INET, socket.SOCK_STREAM )
         self.server_socket.setsockopt( socket.SOL_SOCKET, socket.SO_REUSEADDR, 1 )
@@ -90,17 +129,33 @@ class LeidenLogger( object ):
             client.close()
         
     
+    # Create the output files.
     def ConfigureOutput( self ):
+        
+        # If prefix is not specified, then all output redirected to standard output.
         if self.prefix=="":
             self.output = [ sys.stdout for f in self.port ]
-        else:
-            self.output = [ open( self.prefix+f, "w", buffering=1) for f in self.suffix ]
         
+        # If output is specified, then check if the corresponding port is specified.
+        # If port is not specified, then do not create the output file.
+        # The existance of output file will be used later to decide whether to read from devices.
+        else:
+            #self.output = [ open( self.prefix+f, "w", buffering=1) for f in self.suffix ]
+            for n,f in enumerate( self.suffix ):
+                if self.port[n] != "" and self.port[n] != None:
+                    self.output[n] = open( self.prefix+f, "w", buffering=1)
+                else:
+                    self.output[n] = None
+                    
         print('# LeidenLogger: opened following files' )
-        print('#', [ f.name for f in self.output ] )
+        print('#', [ f.name for f in self.output if f!=None ] )
     
     
+    # Write the header of the three output files.
+    # Header should contain the column names and the timestamp program started.
     def WriteHeader( self ):
+        
+        # LakeShore header
         if self.output[ self.lsindex ]:
             file = self.output[ self.lsindex ]
             print('#', TimeStamp(), file = file )
@@ -111,6 +166,7 @@ class LeidenLogger( object ):
             print('# LakeShore AC Bridge Temperature Controller', file = file )
             print("# Time is measured in second, temperature in Kelvin and resistance in Ohm.", file=file)
             
+        # Pfeiffer header
         if self.output[ self.pfindex ]:
             file = self.output[ self.pfindex ]
             print('#', TimeStamp(), file = file )
@@ -127,6 +183,7 @@ class LeidenLogger( object ):
             print('# Note: mbar is default. Pressure unit could be changed on the gauge controller. Please check!', file=file)
             print('# Note: Channel 6 (custom) is by default capillary, but it could be connected to elsewhere.', file=file)
         
+        # CryoMagnetics header
         if self.output[ self.cmindex ]:
             file = self.output[ self.cmindex ]
             print('#', TimeStamp(), file = file )
@@ -137,8 +194,10 @@ class LeidenLogger( object ):
             print('# CryoMagnetics Cryogen Level Meter LM-510', file = file )
     
     
+    # Main part of the program
     def Execute( self ):
         
+        # Obtain the timestamp of the start time.
         self.starttime = TimeStamp()
         print('# LeidenLogger: executing... Timestamp:', self.starttime)
         
@@ -164,24 +223,33 @@ class LeidenLogger( object ):
             self.Close()
             raise
     
+    
+    # Update the server file.
     def UpdateServer( self ):
+        
         if self.ServerOutput==None:
             return
+        
+        # Write the file output. The content of this file will be printed to the website directly.
         with open( self.ServerOutput, 'w' ) as server:
             print( 'Current time:', Now(), file=server )
             print( '\nTemperature:', file=server )
             for c in self.lschannels:
                 print( '\tChannel %s:\t%.3e K / %.3e Ohm' % (c, self.Temperature[c], self.Resistance[c]), file=server)
                       
-            print('\nPressure:', file=server)
-            for n,p in enumerate(self.Pressure0):
-                print( '\t%s:\t%.3e mbar' % (self.PFHeader[n], p), file=server)
+            if self.output[ self.pfindex ] != None:
+                print('\nPressure:', file=server)
+                for n,p in enumerate(self.Pressure0):
+                    print( '\t%s:\t%.3e mbar' % (self.PFHeader[n], p), file=server)
 
-            print('\nCryogen level:', file=server)
-            print( '\tLHe: %.2f cm' % self.LiquidLevel[0], file=server)
+            if self.output[ self.cmindex ] != None:
+                print('\nCryogen level:', file=server)
+                print( '\tLHe: %.2f cm' % self.LiquidLevel[0], file=server)
     
-    #
+    
+    # Read pressure from Pfeiffer
     def UpdatePressure( self ):
+        
         if self.PfeifferActive()==False:
             return
         
@@ -192,13 +260,17 @@ class LeidenLogger( object ):
             # pressure is given as an list with 6 elements
         #print( '# Pressure read at', TimeStamp(),self.Pressure1)
         
+        # If enough time has elapsed, then always update.
         if curr-self.PFPrevReading > self.freq[ self.pfindex ]:
             update = True
             #print( '# Pressure updating due to reaching required interval.')
+
+        # Alternatively, if the pressure change is big enough, also update pressure
         elif self.MaxFracChange() > self.delta:
             update = True
             #print( '# Pressure updating due to large change.')
         
+        # Write the output
         if update==True:
             if self.output[ self.pfindex ]:
                 print( int(self.TimeSinceStart() ), end='', file = self.output[self.pfindex])
@@ -209,13 +281,15 @@ class LeidenLogger( object ):
         
         # Update pressure reading in all cases (to constantly monitor amount of change)
         self.Pressure0 = [ i for i in self.Pressure1 ]
-            
-    #
+
+
+    # Returns the maximum fractional change among all channels
     def MaxFracChange( self ):
         res = [ abs((j-i)/i) for i,j in zip(self.Pressure0, self.Pressure1) ]
         return max(res)
     
-    #
+    
+    # Read and update temperature by LakeShore
     def UpdateTemperature( self, *callback ):
         
         self.UpdateAutoScan()
@@ -225,6 +299,7 @@ class LeidenLogger( object ):
         if TimeStamp() - self.LSPrevReading < self.freq[ self.lsindex ]:
             return
 
+        # If autoscan is true, then read and update all enabled channels
         if self.autoscan==True:
                         
             # If code reaches this line, it means enough time has elapsed since last reading.
@@ -246,19 +321,25 @@ class LeidenLogger( object ):
                     self.Temperature[ch] = self.lscontroller.ReadKelvin( ch )
                     self.Resistance[ch] = self.lscontroller.ReadOhm( ch )
                     self.NeedUpdateTemp = True
+                    
                 else:
                     break
         
         # If manual operation is in progress, update only the channel of attention.
         else:
+            
+            # First find out the current scanner channel
             ch = self.lscontroller.GetCurrentChannel()
             ch = int(ch.split(',')[0])
             ch = '%d' % ch
+            
+            # If the scanner channel being viewed is enabled, update the temperature
             if ch in self.lschannels:
                 self.TempTimeStamp[ch] = int( self.TimeSinceStart( ) )
                 self.Temperature[ch] = self.lscontroller.ReadKelvin( ch )
                 self.Resistance[ch] = self.lscontroller.ReadOhm( ch )
                 self.NeedUpdateTemp = True
+                
             else:
                 self.NeedUpdateTemp = False                
                 #print('# channel %s is not enabled. Not updating.' % ch, self.lschannels)
@@ -270,7 +351,7 @@ class LeidenLogger( object ):
             self.LSPrevReading = TimeStamp()
 
                         
-    #
+    # Read and update liquid level from CryoMagnetics
     def UpdateLiquidLevel( self ):
         
         # Check frequency or if it is enabled.
@@ -285,10 +366,11 @@ class LeidenLogger( object ):
         # Perform a liquid level reading
         self.CMPrevReading = TimeStamp()
         self.LiquidLevel = [ self.cmcontroller.GetLiquidLevel(n) for n in range(1,3) ]
+        
         if None in self.LiquidLevel:    
             print('# LeidenLogger: liquid level not updated due to invalid reading present in', self.LiquidLevel )
+            
         else:
-            #print('# debug: updating liquid level with', self.LiquidLevel )
             print( int(self.TimeSinceStart() ), end='', file = self.output[self.cmindex])
             for i in self.LiquidLevel:
                 print( ',', '%f' % i, end=' ', file = self.output[self.cmindex])
@@ -325,6 +407,7 @@ class LeidenLogger( object ):
         return self.autoscan
     
     
+    # Write the content of a dictionary to file.
     def WriteDict( self, Dict, file):
         for key in Dict:
             if key == list(Dict.items())[0][0]:
@@ -334,6 +417,8 @@ class LeidenLogger( object ):
             else:
                 print( '%f' % Dict[key], end=", ", file=file )
 
+                
+    # Write temperature to file
     def WriteTemperature( self, file):
         endchar = ', '
         for key in self.lschannels:
@@ -342,8 +427,11 @@ class LeidenLogger( object ):
             print( '%d, %e, %e' % (self.TempTimeStamp[key],self.Temperature[key],self.Resistance[key]), end=endchar, file=file )
 
     
+    # Initialize and configure LakeShore controller
     def ConfigureLakeShore( self ):
+        
         if self.port[self.lsindex]!='':
+            
             try:
                 print( "# LeidenLogger: configuring LakeShore at %s" % self.port[self.lsindex] )
                 self.lscontroller = LakeShoreController( self.port[self.lsindex] )
@@ -363,40 +451,62 @@ class LeidenLogger( object ):
                 self.TempTimeStamp = {}
                 self.Temperature = {}
                 self.Resistance  = {}
+                    # Three dictionaries that contains information for output.
+                    # Since temperature reading is slow, each channel has its own timestamp under TempTimeStamp
+                    
                 self.NeedUpdateTemp = True
+                    # Variable used to check if changes have ocurred that requires updating the output file.
 
             except:
                 print("# LeidenLogger: failed to configure LakeShore. LakeShore will not be enabled." )
                 raise
+                
         else:
             print("# LeidenLogger: port not specified. LakeShore will not be enabled." )
 
-            
+
+    # Initialize connection to Pfeiffer gauge controller.
     def ConfigurePfeiffer( self ):
+        
         if self.port[self.pfindex]!='':
+            
             try:
                 print( "# LeidenLogger: configuring Pfeiffer at %s" % self.port[self.pfindex] )
                 self.pfcontroller = PfeifferGauge( self.port[self.pfindex] )
+                
                 self.PFPrevReading = TimeStamp()-2*self.freq[self.pfindex]
                 self.PFHeader = ['condsr', 'still', 'dump', 'pot', 'IVC', 'custom']
+                    # Initialize the time of previous reading to be past to ensure guaranteed first read.
+                    
             except:
                 print("# LeidenLogger: failed to configure Pfeiffer. Pfeiffer will not be enabled." )
                 raise
+                
         else:
             print("# LeidenLogger: port not specified. Pfeiffer will not be enabled." )
 
+            
+    # Initialize variables relevant to CryoMagnetics            
     def ConfigureCryoMag( self ):
-        if self.port[self.cmindex]!='':
+        
+        # First check if CryoMagnetics is enabled or not.
+        if self.port[self.cmindex] != '':
+            
             try:
                 print( "# LeidenLogger: configuring CryoMagnetics LM-510 at %s" % self.port[self.cmindex] )
                 self.cmcontroller = CryoMagLevelMeter( self.port[self.cmindex] )
                 self.CMPrevReading = TimeStamp()-2*self.freq[self.cmindex]
+                    # Initialize the time of previous reading to be past to ensure guaranteed first read.
+                
             except:
                 print("# LeidenLogger: failed to configure CryoMagnetics LM-510. CryoMagnetics LM-510 will not be enabled." )
                 raise
+                
         else:
             print("# LeidenLogger: port not specified. CryoMagnetics LM-510 will not be enabled." )
-            
+    
+    
+    # Close connections to the devices and output files.
     def Close( self ):
         if self.lscontroller:
             print('# LeidenLogger: closing LakeShore...')
@@ -417,10 +527,8 @@ class LeidenLogger( object ):
             if f:
                 f.close()
         
-        #if self.server_socket:
-        #    self.server_socket.close()
-        
     
+    # Read the configuration from commandline
     def ConfigureOpt( self, argv ):
         print('# LeidenLogger configuring commandline options.')
         print(argv)
@@ -488,23 +596,38 @@ class LeidenLogger( object ):
                 print("\t-h/--help \t display help message.\n")
                 sys.exit()
 
+                
+    # If LakeShore is enabled and active or not
     def LakeShoreActive( self ):
         if self.lscontroller:
             return True
         else:
             return False
     
+    
+    # If Pfeiffer is active or not.
     def PfeifferActive( self ):
         if self.pfcontroller:
             return True
         else:
             return False
+
+        
+    # If CryoMagnetics is active or not
+    def PfeifferActive( self ):
+        if self.cmcontroller:
+            return True
+        else:
+            return False
             
     
+    # Assign signal handler
     def SetupSignalHandler( self ):
         signal.signal( signal.SIGINT, self.Terminate )
         signal.signal( signal.SIGBREAK, self.Terminate )
+
         
+    # Actual function called in case of interruption
     def Terminate( self, signum, frame ):
         print('# LeidenLogger: interruption signal detected. Preparing to exit...')
         
@@ -512,6 +635,9 @@ class LeidenLogger( object ):
         self.Close()
         sys.exit()
 
+        
+    # Return time since the beginning of the run.
+    # Note: this is a member function since start time is a member variable.
     def TimeSinceStart( self ):
         return TimeStamp()-self.starttime
 
@@ -520,16 +646,20 @@ class LeidenLogger( object ):
 # Python main function start here.
 def main():
     if len(sys.argv)<2:
-        print('# Did not detect commandline argument. Executing with pre-configured settings.')
-        ll = LeidenLogger( ['./leidenlogger','--port','COM7:COM6','--freq','60:10','--timeout', '10','--channel','1:2:3:4:5:7:9:10:11:12:14:15','--prefix','run16_cooldown','--delta','0.01'] )
-        ll.Execute()
-        ll.Close()
+        print('# Did not detect commandline argument. Try run it with --help to see usage.')
+        
+        #ll = LeidenLogger( ['./leidenlogger','--port','COM7:COM6','--freq','60:10','--timeout', '10','--channel','1:2:3:4:5:7:9:10:11:12:14:15','--prefix','run16_cooldown','--delta','0.01'] )
+        #ll.Execute()
+        #ll.Close()
+        
     else:
-        print('# Commandline options detected. Executing the following: ')
         print('#', sys.argv )
         ll = LeidenLogger( sys.argv )
         ll.Execute()
         ll.Close()
 
+        
 if __name__== "__main__":
     main()
+    
+    

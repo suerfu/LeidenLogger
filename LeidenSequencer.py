@@ -1,3 +1,9 @@
+# May 24, 2021
+# Created by Burkhant Suerfu
+# suerfu@berkeley.edu
+
+# This is a class for applying a sequence of power levels to the sample heater and record equilibrium temperatures.
+
 #!/usr/bin/python3
 
 import sys
@@ -5,19 +11,31 @@ import getopt
 import time
 import datetime
 from LakeShoreController import LakeShoreController
+import signal
 
+
+# Get the current python date
 def Now():
     return datetime.datetime.now()
 
+
+# Get the current python timestamp
 def TimeStamp():
     return Now().timestamp()
 
+
+# Returns the elapsed time since the specified reference point.
 def TimeSince( t1, format='d' ):
     return int( TimeStamp() - t1 )
 
-def PrintTimeStamp( file=sys.stdout ):
-    print("#",Now(), file=file)
 
+# Print the timestamp
+def PrintTimeStamp( file=sys.stdout ):
+    print( "#", Now(), file=file )
+
+    
+# Print the temperature to file.
+# The temperature is contained in a dictionary, with the first element the timestamp
 def PrintT( Dict, *, file=sys.stdout ):
     for key in Dict:
         if key == list(Dict.items())[-1][0]:
@@ -25,6 +43,8 @@ def PrintT( Dict, *, file=sys.stdout ):
         else:
             print( Dict[key], end=", ", file=file)
 
+
+# The main sequencer program
 
 class LeidenSequencer( object ):
     
@@ -35,9 +55,11 @@ class LeidenSequencer( object ):
         self.controller = None
         
         # Default serial port for making the connection
+        # Note that this is specific to Leiden fridge
         self.Port = "COM7"
 
         # Channels to record data. It should be a list of numbers between 1 to 16.
+        # The temperature of the SampleChannel is used to determine equilibrium criteria.
         self.Channels = []
         self.SampleChannel = -1
 
@@ -46,6 +68,9 @@ class LeidenSequencer( object ):
 
         # Default timeout parameter in minutes
         self.Timeout = 60
+        
+        # Default minimum time at a setpoint
+        self.WaitTime = 3*60
 
         # Interval in seconds between successive temperature readings while waiting for equilibrium
         self.Interval = 60
@@ -61,21 +86,27 @@ class LeidenSequencer( object ):
         self.Log = temp+'.log'
         self.Output = temp+'.txt'
 
-        # system output
+        # system output for printing progress and error messages.
         self.Sysout = [sys.stdout]
         
+        # Read the configuration from commandline and setup the interruption handler.
         self.ConfigOpt( argv )
         self.SetupSignalHandler()
         
         # Temperature dictionaries 1 and 2.
+        # Dict 1 is for the previous reading.
+        # After each reading of temperature (Dict 2), Dict 1 is updated with Dict 2.
         self.T1 = {}
         self.T2 = {}
         
         
     def Execute( self ):
         
+        # Get the configurations and output right.
         self.Book()
         self.PrintConfig()
+        
+        # Establish connection to the LakeShore program.
         self.ConfigLakeShore()
         
         # Record starting time as origin of time
@@ -83,13 +114,16 @@ class LeidenSequencer( object ):
         for f in self.Sysout:
             print('# [', self.StartTimeOffset,']', file = f )
         
+        # Start the main sequencing program.
         self.Sequence()
+        
         
     # Configure commandline parameters        
     def ConfigOpt( self, argv):
+        
         # Obtain the commandline options and arguments.
         # Setpoints will be the arguments which are specified in the end
-        opts, self.Setpoints = getopt.getopt( argv[1:], "c:t:d:R:p:o:hs:",[ "timeout=", "dTdt=", "port=", "prefix=", "output=", "freq=", "sample=", "help" ] )
+        opts, self.Setpoints = getopt.getopt( argv[1:], "c:t:d:R:p:o:hs:",[ "timeout=", "dTdt=", "port=", "channels=","prefix=", "output=", "freq=", "sample=", "wait=", "help" ] )
 
         # Iterate through the commandline options to set the parameters.
         for opt, arg in opts:
@@ -132,6 +166,11 @@ class LeidenSequencer( object ):
             if opt in ("-t", "--timeout"):
                 self.Timeout = int(arg)
                 # Maximum dwell time at a setpoint in minutes.
+                
+            if opt in ("--wait"):
+                self.WaitTime = int(arg)
+                # Maximum dwell time at a setpoint in minutes.
+
 
             if opt in ("-h","--help"):
                 print("usage: " + argv[0] + " [options optional_parameter] X1 [X2, X3, ...]\n")
@@ -147,10 +186,13 @@ class LeidenSequencer( object ):
                 print("\t-R foo\t set the sample heater resistance. Default is 10 ohms.\n")
                 print("\t-s foo\t set the sample channel to foo (default is last enabled channel). Its temperature is used as stabilization criteria.\n")
                 print("\t-t/--timeout T\t set the maximum wait time for temperature to stablize to be T min.\n")
+                print("\t-t/--wait T\t set the minimum time at each setpoint.\n")
                 sys.exit()
                 
-                
+
+    # Create the output data and log files.
     def Book( self ):
+        
         # If sample channel is not specified, then use the last enabled channel as sample channel.
         if self.SampleChannel==-1:
             self.SampleChannel = self.Channels[-1]
@@ -227,6 +269,7 @@ class LeidenSequencer( object ):
             self.T1['ts'] = TimeSince( self.StartTimeOffset )
             self.T1['pw'] = power
             
+            # Read temperature into T1, print and pause for one sampling interval and enter a loop.
             self.ReadTemperature( self.T1 )
 
             for f in self.Sysout:
@@ -243,14 +286,20 @@ class LeidenSequencer( object ):
                     PrintT( self.T2, file=f )
 
                 # Check if rate of change is small enough
+                if self.T2['ts'] - self.T1['ts'] < self.WaitTime:
+                    continue
+                    
                 rate = self.GetRate( self.SampleChannel, self.T2, self.T1 )
+                
                 if rate < self.dTdt:
+                    
                     for f in self.Sysout:
                         print('# Stabilized: dT/dt = %f K/min, rate of change is smaller than %f' % ( rate, self.dTdt ), file=f )
                     break
                     
                 # Check for timeout
                 elif self.SequencerTimeout()==True:
+                    
                     for f in self.Sysout:
                         print('#', Now(), 'Timeout: %d s - %d s > %d min' % (self.T2['ts'],self.T1['ts'], self.Timeout), file=f );
                     break
@@ -277,6 +326,7 @@ class LeidenSequencer( object ):
         dt = (T2['ts'] - T1['ts'])/60
         return dT/dt    
     
+    
     # Function to update current temperature reading
     def ReadTemperature( self, T, Navg=10 ):
         for ch in self.Channels:
@@ -286,11 +336,14 @@ class LeidenSequencer( object ):
             
             # perform successive Navg readings and return the average
             T[ch] = 0 
-            for i in range( 1, Navg ):
+            for i in range( 1, Navg+1 ):
                 T[ch] += self.controller.ReadKelvin( ch )
             
             T[ch] /= Navg
-            
+    
+    
+    # Update temperature
+    # This function is a copy function in disguise
     def UpdateTemperature( self, Dest, Source):
         for key in Dest:
             Dest[key] = Source[key]
@@ -306,10 +359,15 @@ class LeidenSequencer( object ):
         self.OutputFile.close()
         self.LogFile.close()
 
+        
+    # Set up the handler for proper handling of interruption signals.
     def SetupSignalHandler( self ):
         signal.signal( signal.SIGINT, self.Terminate )
         signal.signal( signal.SIGBREAK, self.Terminate )
         
+    
+    # The actual function called by the handler.
+    # Not sure what signum and frame are.
     def Terminate( self, signum, frame ):
         print('# LeidenLogger: interruption signal detected. Preparing to exit...')
         
@@ -330,5 +388,8 @@ def main():
         print('# Failed to create sequencer object.')
     
     
+# Actual main python function    
 if __name__== "__main__":
     main()
+    
+    
