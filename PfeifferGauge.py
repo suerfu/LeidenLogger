@@ -2,7 +2,7 @@
 # Created by Burkhant Suerfu
 # suerfu@berkeley.edu
 
-# This is a class for handling communication to Pfeiffer 366 Gauge controller
+# This is a class for handling communication to LakeShore 372 temperature controller.
 # This class will be derived from SerialDevice class
 # Serial parameters are:
     # Baudrate: 9600
@@ -58,8 +58,11 @@ class PfeifferGauge( SerialDevice ):
         
     
     # Send command until acknowledged
-    def write_until_ack( self, cmd, max_try=self.MaxAttempt ):
+    def write_until_ack( self, cmd, max_try=None ):
         
+        if max_try == None:
+            max_try = self.MaxAttempt
+            
         self.write(cmd)
         
         for i in range( 1, max_try+1 ):
