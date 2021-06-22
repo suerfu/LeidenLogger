@@ -115,19 +115,27 @@ class CryoMagLevelMeter( SerialDevice ):
                 # Since the original command is also echoed, first remove it.
                 lev = reply.replace( cmd, '').split()
                 
-                # return the 
-                if lev[1]=='cm':
-                    return float(lev[0])
-                elif lev[1]=='in':
-                    return float(lev[0]*2.54)
-                elif lev[1]=='%':
-                    self.log('# CryoMag Warning: returning liquid level in %' )
-                    return float(lev[0])
-                
-                else:
-                    self.log('# CryoMag Error: unknown unit in', reply)
+                # It seems very occasionally the obtained liquid level is empty after removing the echoed command.
+                if len(lev)<2:
                     
-                return 
+                    self.log('# CryoMag Error: GetLiquidLevel not in correct format:', reply)
+                    self.log('# Making one more attempt...')
+                    self.reset_input()
+                
+                # Response has at least the required number of fields. Next, check unit.
+                else:
+                
+                    # return the 
+                    if lev[1]=='cm':
+                        return float(lev[0])
+                    elif lev[1]=='in':
+                        return float(lev[0]*2.54)
+                    elif lev[1]=='%':
+                        self.log('# CryoMag Warning: returning liquid level in %' )
+                        return float(lev[0])
+                    else:
+                        self.log('# CryoMag Error: unknown unit in', reply)
+                        return 
             
             else:
                 self.log('# CryoMag: received', reply, 'in response to', cmd )
