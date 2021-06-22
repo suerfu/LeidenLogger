@@ -234,8 +234,10 @@ class LeidenLogger( object ):
         with open( self.ServerOutput, 'w' ) as server:
             print( 'Current time:', Now(), file=server )
             print( '\nTemperature:', file=server )
-            for c in self.lschannels:
-                print( '\tChannel %s:\t%.3e K / %.3e Ohm' % (c, self.Temperature[c], self.Resistance[c]), file=server)
+            
+            if self.output[ self.lsindex ] != None:
+                for c in self.lschannels:
+                    print( '\tChannel %s:\t%.3e K / %.3e Ohm' % (c, self.Temperature[c], self.Resistance[c]), file=server)
                       
             if self.output[ self.pfindex ] != None:
                 print('\nPressure:', file=server)
