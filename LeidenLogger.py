@@ -616,7 +616,7 @@ class LeidenLogger( object ):
 
         
     # If CryoMagnetics is active or not
-    def PfeifferActive( self ):
+    def CryoMagActive( self ):
         if self.cmcontroller:
             return True
         else:
