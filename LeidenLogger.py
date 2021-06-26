@@ -375,7 +375,7 @@ class LeidenLogger( object ):
         else:
             print( int(self.TimeSinceStart() ), end='', file = self.output[self.cmindex])
             for i in self.LiquidLevel:
-                print( ',', '%f' % i, end=' ', file = self.output[self.cmindex])
+                print( ', %f' % i, end='', file = self.output[self.cmindex])
             print( '', file = self.output[self.cmindex])
                 
 
