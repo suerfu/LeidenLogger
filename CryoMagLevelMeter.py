@@ -135,7 +135,7 @@ class CryoMagLevelMeter( SerialDevice ):
                         return float(lev[0])
                     else:
                         self.log('# CryoMag Error: unknown unit in', reply)
-                        return 
+                        #return 
             
             else:
                 self.log('# CryoMag: received', reply, 'in response to', cmd )
